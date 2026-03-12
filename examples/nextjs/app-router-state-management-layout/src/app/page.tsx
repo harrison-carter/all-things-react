@@ -25,6 +25,12 @@ const approaches = [
     description:
       "Portals for open-ended slot injection, Zustand for provider-free mutation state. The layout is fully route-agnostic, no providers wrap the tree, and each page uses only the tools it needs.",
   },
+  {
+    href: "/rq-portal",
+    title: "5. Portal + React Query",
+    description:
+      "Portals for slot injection, React Query's cache for mutation state via useMutationState. Zero extra dependencies — just the QueryClientProvider you already have.",
+  },
 ];
 
 export default function Home() {
@@ -33,7 +39,7 @@ export default function Home() {
       <div>
         <h1 className="text-2xl font-bold">Layout State Management Demo</h1>
         <p className="mt-2 text-zinc-400">
-          Four ways to surface route-specific components in a shared layout
+          Five ways to surface route-specific components in a shared layout
           when the state originates from a nested route. Each approach has three
           sub-pages — a <strong>form</strong> (save status badge), a{" "}
           <strong>detail</strong> view (back link), and a{" "}

@@ -9,6 +9,7 @@ const links = [
   { href: "/portal", label: "Portal" },
   { href: "/zustand", label: "Zustand" },
   { href: "/hybrid", label: "Hybrid" },
+  { href: "/rq-portal", label: "RQ + Portal" },
 ];
 
 export function Nav() {

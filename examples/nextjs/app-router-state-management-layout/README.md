@@ -1,6 +1,6 @@
 # Next.js App Router — Layout State Management Demo
 
-Three approaches to a common problem in the App Router: **how do you render route-specific components in a shared layout when different pages need different things in the same slot?**
+Five approaches to a common problem in the App Router: **how do you render route-specific components in a shared layout when different pages need different things in the same slot?**
 
 The concrete example is a navbar slot that changes depending on which page is active:
 
@@ -10,7 +10,7 @@ The concrete example is a navbar slot that changes depending on which page is ac
 | `/[approach]/detail` | Back link ("← Back to form") | Navigational affordance for a detail/view page |
 | `/[approach]/history` | Action buttons (Export / Refresh) | Contextual actions for a list page |
 
-The layout owns the visual placement of the slot, but each page decides _what_ appears there. The four approaches differ in how that coordination happens.
+The layout owns the visual placement of the slot, but each page decides _what_ appears there. The five approaches differ in how that coordination happens.
 
 ## The Problem
 
@@ -20,7 +20,7 @@ You can't "pass props up" from a page to its layout. Layouts receive `children` 
 
 This problem gets more interesting when different pages want **different components** in the same layout slot. A form page wants a save indicator. A detail page wants a back link. A history page wants action buttons. The layout can't hardcode any of these — it needs to render whatever the active page dictates.
 
-This demo explores four mechanisms — three "pure" approaches and a hybrid that combines the strengths of portals and Zustand.
+This demo explores five mechanisms — three "pure" approaches and two hybrids that combine portals with Zustand and React Query respectively.
 
 ## Getting Started
 
@@ -29,7 +29,7 @@ npm install
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000). The home page links to all four approaches. Each approach has a tab bar to navigate between its three sub-pages (form, detail, history).
+Visit [http://localhost:3000](http://localhost:3000). The home page links to all five approaches. Each approach has a tab bar to navigate between its three sub-pages (form, detail, history).
 
 ## Project Structure
 
@@ -81,6 +81,16 @@ src/
 │       ├── form/page.tsx       ← useFormMutation (Zustand) + PortalInject for status badge
 │       ├── detail/page.tsx     ← PortalInject for back link (no store needed)
 │       └── history/page.tsx    ← PortalInject for action buttons (no store needed)
+│   └── rq-portal/
+│       ├── hooks/
+│       │   ├── index.ts              ← Barrel export
+│       │   ├── useFormMutation.ts    ← useMutation with a mutationKey for cache lookup
+│       │   └── useFormStatus.ts      ← useMutationState to read status from RQ cache
+│       ├── layout.tsx          ← PortalTarget + PortalSlotProvider only — no other providers
+│       ├── page.tsx            ← Index: explains the RQ + portal approach
+│       ├── form/page.tsx       ← useFormMutation + PortalInject (status via useFormStatus)
+│       ├── detail/page.tsx     ← PortalInject for back link
+│       └── history/page.tsx    ← PortalInject for action buttons
 ├── components/
 │   ├── nav.tsx                 ← Top nav with active route highlighting
 │   ├── sub-nav.tsx             ← Tab bar for form/detail/history sub-routes
@@ -256,22 +266,68 @@ Neither mechanism alone is sufficient. Portals without Zustand still need a cont
 
 ---
 
+## Approach 5: Portal + React Query (`/rq-portal`)
+
+### How it works
+
+This approach refines the Portal + Zustand hybrid by replacing Zustand with something the app already has: React Query's cache.
+
+- **Portals** handle slot injection, exactly as in approaches 2 and 4. The layout renders a `<PortalTarget>` and pages use `<PortalInject>` to teleport content into it.
+
+- **React Query's cache** handles mutation state. The `useFormMutation` hook wraps `useMutation` with a `mutationKey`, making the mutation identifiable in the QueryClient cache. A companion `useFormStatus` hook calls `useMutationState` — a TanStack Query v5 API that reads mutation state from the cache, filtered by key — to retrieve the latest status from anywhere in the tree.
+
+The portalled status badge calls `useFormStatus()` and renders accordingly. No Zustand store, no `useEffect` sync, no extra context providers. The only provider involved is the root-level `QueryClientProvider` that every React Query app already has.
+
+### What gets eliminated vs. the Zustand hybrid
+
+- **The Zustand dependency** — gone entirely. No `zustand` in `package.json`, no store files, no sync hooks.
+- **The `useEffect` sync layer** — the Zustand hybrid needs a `useEffect` to push mutation status from React Query into the store on every status change. This approach reads directly from React Query's cache — there's no intermediate store to keep in sync.
+- **The one-frame delay** — because `useMutationState` reads from the QueryClient (which is updated synchronously by React Query), the status is always current. There's no `useEffect`-induced lag.
+
+### Why this works
+
+React Query's `QueryClient` is already a global, observable state store for async operations. Every mutation and query writes its state into the client's cache, and any component in the tree can subscribe to changes via hooks like `useMutationState` and `useQuery`. By giving the mutation a `mutationKey`, we make it addressable — any component can look it up by key, just like a query.
+
+This is the same insight that makes Zustand work (global singleton, subscribe from anywhere), but using infrastructure the app already has. The `QueryClientProvider` at the root is the only "provider" in play — and it's already there for the mutation itself.
+
+### Tradeoffs
+
+- **Zero extra dependencies** — no Zustand, no custom context. The only requirements are React Query (which the app already uses) and the portal slot infrastructure (shared with approaches 2 and 4).
+- **No sync layer** — `useMutationState` reads directly from the cache. There's no `useEffect` copying state from one system to another, which means fewer moving parts and no stale-by-one-frame issues.
+- **Open component set** — pages inject arbitrary components via portals. The layout is fully route-agnostic, same as approaches 2 and 4.
+- **Scoped complexity** — the detail and history pages use portals alone. Only the form page interacts with React Query hooks. Each page uses only what it needs.
+- **Natural cleanup** — portal content unmounts with the page. The slot is empty on routes that don't inject anything.
+- **Mutation state persists in cache** — like the Zustand hybrid, the mutation state lives in a singleton (the QueryClient). If you navigate away and back, `useMutationState` will return the previous mutation's status. The portal unmounts and remounts, so the badge reappears with the old status. Use `mutation.reset()` or a fresh `mutationKey` per session if you want clean state on revisit.
+- **`useMutationState` returns all matching mutations** — if the same `mutationKey` is used across multiple mount/unmount cycles, the array grows. The `useFormStatus` hook takes the last entry, but this is worth understanding: the array is append-only for the lifetime of the QueryClient.
+- **DOM/React tree mismatch** — inherits the portal approach's debugging quirk.
+- **Client-only slot content** — inherits the portal approach's SSR limitation.
+
+### Gotchas
+
+- `useMutationState` was introduced in TanStack Query v5. If you're on v4 or earlier, this approach isn't available — you'd need the Zustand hybrid or a custom observer pattern.
+- The `mutationKey` must be consistent between `useFormMutation` (which creates the mutation) and `useFormStatus` (which reads from the cache). A typo in either will silently break the link. The shared `FORM_MUTATION_KEY` constant prevents this, but it's a coupling point.
+- `useMutationState` subscribes to _all_ mutations matching the filter. In a high-throughput scenario with many mutations sharing a key, the hook would re-render on every mutation state change. For a single form this is irrelevant, but it's a scaling consideration.
+- The `PortalSlotProvider` still uses a lightweight React context to pass the target ID. This is static and causes no re-renders.
+
+---
+
 ## Which Should You Use?
 
 There isn't a universal answer — it depends on the shape of your app and what you're optimising for.
 
-| | Context | Portal | Zustand | Hybrid |
-|---|---|---|---|---|
-| **Provider needed at layout level** | Yes (two: form + slot) | No (page-scoped) | No (no provider) | No (ID-only, no state) |
-| **Extra dependencies** | None | None | `zustand` | `zustand` |
-| **Re-render scope** | All provider children | Only portal content | Only selecting components | Only portal content + selectors |
-| **Layout knows about slot types** | No (arbitrary nodes) | No (arbitrary nodes) | Yes (closed switch) | No (arbitrary nodes) |
-| **Slot cleanup on navigation** | useEffect unmount | Portal unmounts | useNavbarSlot unmount | Portal unmounts |
-| **Adding a new navbar component** | New page only | New page only | New page + layout switch | New page only |
-| **State lifetime** | Tied to provider mount | Tied to page mount | Singleton (cleared by hook) | Singleton (portal hides on unmount) |
-| **Form page needs a provider** | No (layout-level) | Yes (page-level context) | No (store) | No (store) |
-| **SSR-compatible** | Yes | Partial (client-only) | Client components only | Partial (client-only) |
-| **Complexity** | Low–medium | Medium | Medium (two stores) | Medium (two mechanisms) |
+| | Context | Portal | Zustand | Hybrid (Zustand) | Hybrid (RQ) |
+|---|---|---|---|---|---|
+| **Provider needed at layout level** | Yes (two: form + slot) | No (page-scoped) | No (no provider) | No (ID-only) | No (ID-only) |
+| **Extra dependencies** | None | None | `zustand` | `zustand` | None |
+| **Re-render scope** | All provider children | Only portal content | Only selecting components | Portal + selectors | Portal + cache subscribers |
+| **Layout knows about slot types** | No (arbitrary nodes) | No (arbitrary nodes) | Yes (closed switch) | No (arbitrary nodes) | No (arbitrary nodes) |
+| **Slot cleanup on navigation** | useEffect unmount | Portal unmounts | useNavbarSlot unmount | Portal unmounts | Portal unmounts |
+| **Adding a new navbar component** | New page only | New page only | New page + layout switch | New page only | New page only |
+| **State lifetime** | Tied to provider mount | Tied to page mount | Singleton (cleared by hook) | Singleton (portal hides) | QueryClient lifetime |
+| **Form page needs a provider** | No (layout-level) | Yes (page-level context) | No (store) | No (store) | No (cache) |
+| **Sync layer needed** | No | No | useEffect → store | useEffect → store | No (direct cache read) |
+| **SSR-compatible** | Yes | Partial (client-only) | Client components only | Partial (client-only) | Partial (client-only) |
+| **Complexity** | Low–medium | Medium | Medium (two stores) | Medium (two mechanisms) | Low–medium |
 
 **Context** is the right default when you want to stay within React's built-in primitives and the provider wrapping cost is acceptable. The `SlotContent` pattern gives pages declarative control over the slot without introducing external dependencies. The main cost is provider bloat — every route is wrapped in contexts it may not need.
 
@@ -279,4 +335,6 @@ There isn't a universal answer — it depends on the shape of your app and what 
 
 **Zustand** is the pragmatic choice when you want to avoid provider hierarchies entirely and you're comfortable with a closed set of slot types. The layout must enumerate all possible components upfront, which re-introduces coupling — but the mount/unmount lifecycle is clean and the re-render characteristics are excellent. It's a good fit when the set of possible navbar states is small and stable.
 
-**Hybrid (Portal + Zustand)** is the most complete solution. Portals keep the layout route-agnostic with an open component set. Zustand eliminates the page-level context provider that the pure portal approach needs for the form page. Each page uses only the mechanisms it needs — the detail and history pages use portals alone, while the form page adds Zustand for mutation state. The cost is a larger conceptual surface area (two patterns to understand) and the `zustand` dependency.
+**Hybrid (Portal + Zustand)** combines portals for open-ended slot injection with Zustand for provider-free mutation state. Each page uses only the mechanisms it needs. The cost is a larger conceptual surface area and the `zustand` dependency.
+
+**Hybrid (Portal + React Query)** is the leanest complete solution. It achieves everything the Zustand hybrid does — open component set, no layout-level providers, scoped complexity — but without an extra dependency or sync layer. `useMutationState` reads directly from React Query's cache, which the app already maintains. If your app is already using TanStack Query v5, this is the approach with the fewest moving parts and the smallest conceptual surface area.
