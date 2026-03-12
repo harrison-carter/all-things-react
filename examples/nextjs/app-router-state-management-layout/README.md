@@ -10,7 +10,7 @@ The concrete example is a navbar slot that changes depending on which page is ac
 | `/[approach]/detail` | Back link ("← Back to form") | Navigational affordance for a detail/view page |
 | `/[approach]/history` | Action buttons (Export / Refresh) | Contextual actions for a list page |
 
-The layout owns the visual placement of the slot, but each page decides _what_ appears there. The three approaches differ in how that coordination happens.
+The layout owns the visual placement of the slot, but each page decides _what_ appears there. The four approaches differ in how that coordination happens.
 
 ## The Problem
 
@@ -20,7 +20,7 @@ You can't "pass props up" from a page to its layout. Layouts receive `children` 
 
 This problem gets more interesting when different pages want **different components** in the same layout slot. A form page wants a save indicator. A detail page wants a back link. A history page wants action buttons. The layout can't hardcode any of these — it needs to render whatever the active page dictates.
 
-This demo explores three mechanisms, each with meaningfully different tradeoffs.
+This demo explores four mechanisms — three "pure" approaches and a hybrid that combines the strengths of portals and Zustand.
 
 ## Getting Started
 
@@ -29,7 +29,7 @@ npm install
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000). The home page links to all three approaches. Each approach has a tab bar to navigate between its three sub-pages (form, detail, history).
+Visit [http://localhost:3000](http://localhost:3000). The home page links to all four approaches. Each approach has a tab bar to navigate between its three sub-pages (form, detail, history).
 
 ## Project Structure
 
@@ -55,21 +55,32 @@ src/
 │   │   ├── form/page.tsx       ← Portals save status badge into layout slot
 │   │   ├── detail/page.tsx     ← Portals back link into layout slot
 │   │   └── history/page.tsx    ← Portals action buttons into layout slot
-│   └── zustand/
+│   ├── zustand/
+│   │   ├── hooks/
+│   │   │   ├── useMutation/
+│   │   │   │   ├── index.ts            ← Barrel export
+│   │   │   │   ├── store.ts            ← Zustand store holding mutation status
+│   │   │   │   └── useFormMutation.ts  ← useMutation hook that syncs status into the store
+│   │   │   └── useNavbarSlot/
+│   │   │       ├── index.ts            ← Barrel export
+│   │   │       ├── store.ts            ← Zustand store holding the active slot type
+│   │   │       └── useNavbarSlot.ts    ← Hook: sets slot type on mount, clears on unmount
+│   │   ├── layout.tsx          ← Reads from both stores, renders matching component
+│   │   ├── page.tsx            ← Index: explains the Zustand approach
+│   │   ├── form/page.tsx       ← Sets slotType to "save-status"
+│   │   ├── detail/page.tsx     ← Sets slotType to "back-link"
+│   │   └── history/page.tsx    ← Sets slotType to "history-actions"
+│   └── hybrid/
 │       ├── hooks/
-│       │   ├── useMutation/
-│       │   │   ├── index.ts            ← Barrel export
-│       │   │   ├── store.ts            ← Zustand store holding mutation status
-│       │   │   └── useFormMutation.ts  ← useMutation hook that syncs status into the store
-│       │   └── useNavbarSlot/
+│       │   └── useFormMutation/
 │       │       ├── index.ts            ← Barrel export
-│       │       ├── store.ts            ← Zustand store holding the active slot type
-│       │       └── useNavbarSlot.ts    ← Hook: sets slot type on mount, clears on unmount
-│       ├── layout.tsx          ← Reads from both stores, renders matching component
-│       ├── page.tsx            ← Index: explains the Zustand approach
-│       ├── form/page.tsx       ← Sets slotType to "save-status"
-│       ├── detail/page.tsx     ← Sets slotType to "back-link"
-│       └── history/page.tsx    ← Sets slotType to "history-actions"
+│       │       ├── store.ts            ← Zustand store for mutation status (no navbar slot store)
+│       │       └── useFormMutation.ts  ← useMutation hook that syncs status into the store
+│       ├── layout.tsx          ← PortalTarget + PortalSlotProvider only — no other providers
+│       ├── page.tsx            ← Index: explains the hybrid approach
+│       ├── form/page.tsx       ← useFormMutation (Zustand) + PortalInject for status badge
+│       ├── detail/page.tsx     ← PortalInject for back link (no store needed)
+│       └── history/page.tsx    ← PortalInject for action buttons (no store needed)
 ├── components/
 │   ├── nav.tsx                 ← Top nav with active route highlighting
 │   ├── sub-nav.tsx             ← Tab bar for form/detail/history sub-routes
@@ -196,24 +207,76 @@ The `useNavbarSlot` hook encapsulates the mount/unmount lifecycle: it sets the s
 
 ---
 
+## Approach 4: Portal + Zustand Hybrid (`/hybrid`)
+
+### How it works
+
+This approach cherry-picks the strongest aspects of portals and Zustand while discarding the weaknesses of each:
+
+- **Portals** handle slot injection. The layout renders a `<PortalTarget>` and wraps children in a lightweight `<PortalSlotProvider>` (which only passes a target ID — no state). Each page uses `<PortalInject>` to teleport whatever component it wants into the layout's slot. The layout is fully route-agnostic — it never needs to know what pages exist or what they inject.
+
+- **Zustand** handles mutation state. The form page uses a `useFormMutation` hook that syncs React Query's mutation status into a Zustand store. The portalled `<NetworkStatusDisplay>` reads from that store via `useFormStore(s => s.status)`. No `FormContextProvider` wraps the layout tree.
+
+The detail and history pages don't use Zustand at all — they just portal static components (a back link and action buttons) into the slot. Each page uses only the tools it needs.
+
+### What gets eliminated
+
+Compared to each pure approach, the hybrid removes specific pain points:
+
+- **vs. Context:** No providers wrap the layout tree. The `FormContextProvider` and `LayoutSlotProvider` that the context approach needs are both gone. Sibling routes aren't wrapped in contexts they don't use, and there are no wasted re-renders from provider state changes.
+- **vs. Portal (pure):** The pure portal approach needs a `PortalFormContextProvider` wrapping the form page to share mutation state between the form and the portalled status badge. The hybrid replaces this with a Zustand store — the portalled component reads directly from the store, no page-level context needed.
+- **vs. Zustand (pure):** The pure Zustand approach needs a `useNavbarSlotStore` with a `slotType` discriminator and a switch statement in the layout that enumerates all possible components. The hybrid replaces this with portals — each page injects arbitrary content, and the layout doesn't need to know the set of possible slot types.
+
+### Why this combination works
+
+Portals and Zustand solve orthogonal problems:
+
+- **Portals** answer: "how does the page control what appears in the layout's DOM?" They decouple DOM placement from React tree position, allowing pages to inject arbitrary content into a layout slot.
+- **Zustand** answers: "how does the portalled component access state without a shared provider?" It decouples state access from tree position, allowing any component to read from a store regardless of where it sits in the component hierarchy.
+
+Neither mechanism alone is sufficient. Portals without Zustand still need a context provider to share mutation state (the pure portal approach). Zustand without portals still needs the layout to enumerate slot types (the pure Zustand approach). Together, each one covers the other's blind spot.
+
+### Tradeoffs
+
+- **Minimal layout-level infrastructure** — the layout only has a `PortalSlotProvider` (which passes a string ID, not state) and a `PortalTarget` div. No form context, no slot context, no store subscriptions. The layout is a server component-compatible shell.
+- **Open component set** — pages inject arbitrary components via portals. Adding a new page with a new navbar component requires zero layout changes. This matches the pure portal approach and improves on the pure Zustand approach.
+- **Scoped complexity** — the Zustand store only exists for the form page's mutation state. The detail and history pages use portals alone with no store involvement. Each page pulls in only the mechanisms it needs, rather than being forced into a one-size-fits-all pattern.
+- **Selective re-renders** — the portalled status badge subscribes to the store via `useFormStore(s => s.status)`, so it only re-renders when the status changes. No other component in the tree is affected.
+- **Natural cleanup** — portal content unmounts with the page. The slot is empty on routes that don't inject anything, and on the index page.
+- **Two mechanisms to understand** — developers need to know both the portal pattern (target/inject/context plumbing) and the Zustand pattern (store/hook/sync). This is a higher conceptual surface area than any single pure approach.
+- **External dependency** — still requires `zustand`, though only for pages that have cross-component state.
+- **DOM/React tree mismatch** — inherits the portal approach's debugging quirk: portalled content appears under the page in React DevTools, not where it's visible on screen.
+- **Client-only slot content** — inherits the portal approach's SSR limitation: `createPortal` is client-only, so the slot content won't be in the initial HTML.
+
+### Gotchas
+
+- The Zustand store is a module singleton, so mutation status persists across navigations. If you submit the form, navigate to `/hybrid/detail`, and come back, the store still holds the last status. The _portal_ unmounts and remounts (clearing the visible badge), but the store retains its value. In practice this means the badge reappears with the previous status on re-mount. Whether this is desirable depends on your use case — add a store reset in the `useFormMutation` cleanup if you want fresh state on every visit.
+- The `useEffect` sync between React Query and the Zustand store has the same one-frame delay as the pure Zustand approach. The store is always one render cycle behind the actual mutation status.
+- The `PortalSlotProvider` uses a React context internally to pass the target ID. This is the one context in the tree — but it's static (the ID never changes), so it causes no re-renders.
+
+---
+
 ## Which Should You Use?
 
 There isn't a universal answer — it depends on the shape of your app and what you're optimising for.
 
-| | Context | Portal | Zustand |
-|---|---|---|---|
-| **Provider needed at layout level** | Yes (two: form + slot) | No (page-scoped) | No (no provider) |
-| **Extra dependencies** | None | None | `zustand` |
-| **Re-render scope** | All provider children | Only portal content | Only selecting components |
-| **Layout knows about slot types** | No (receives arbitrary nodes) | No (receives arbitrary nodes) | Yes (closed switch on types) |
-| **Slot cleanup on navigation** | Automatic (useEffect unmount) | Automatic (portal unmounts) | Automatic (useNavbarSlot unmount) |
-| **Adding a new navbar component** | New page only | New page only | New page + layout switch case |
-| **State lifetime** | Tied to provider mount | Tied to page mount | Module singleton (cleared by hook) |
-| **SSR-compatible** | Yes | Partial (portal is client-only) | Client components only |
-| **Complexity** | Low–medium | Medium | Medium (two stores + sync) |
+| | Context | Portal | Zustand | Hybrid |
+|---|---|---|---|---|
+| **Provider needed at layout level** | Yes (two: form + slot) | No (page-scoped) | No (no provider) | No (ID-only, no state) |
+| **Extra dependencies** | None | None | `zustand` | `zustand` |
+| **Re-render scope** | All provider children | Only portal content | Only selecting components | Only portal content + selectors |
+| **Layout knows about slot types** | No (arbitrary nodes) | No (arbitrary nodes) | Yes (closed switch) | No (arbitrary nodes) |
+| **Slot cleanup on navigation** | useEffect unmount | Portal unmounts | useNavbarSlot unmount | Portal unmounts |
+| **Adding a new navbar component** | New page only | New page only | New page + layout switch | New page only |
+| **State lifetime** | Tied to provider mount | Tied to page mount | Singleton (cleared by hook) | Singleton (portal hides on unmount) |
+| **Form page needs a provider** | No (layout-level) | Yes (page-level context) | No (store) | No (store) |
+| **SSR-compatible** | Yes | Partial (client-only) | Client components only | Partial (client-only) |
+| **Complexity** | Low–medium | Medium | Medium (two stores) | Medium (two mechanisms) |
 
 **Context** is the right default when you want to stay within React's built-in primitives and the provider wrapping cost is acceptable. The `SlotContent` pattern gives pages declarative control over the slot without introducing external dependencies. The main cost is provider bloat — every route is wrapped in contexts it may not need.
 
-**Portals** are the cleanest solution for this specific problem. Each page independently owns what appears in the layout, the layout is fully route-agnostic, and providers stay scoped to the pages that need them. The tradeoff is more infrastructure (target/inject/context plumbing) and the DOM/React tree mismatch that can complicate debugging.
+**Portals** are the cleanest single-mechanism solution. Each page independently owns what appears in the layout, the layout is fully route-agnostic, and providers stay scoped to the pages that need them. The tradeoff is more infrastructure (target/inject/context plumbing) and the DOM/React tree mismatch that can complicate debugging. The form page still needs a page-level context provider to share mutation state between the form and the portalled badge.
 
 **Zustand** is the pragmatic choice when you want to avoid provider hierarchies entirely and you're comfortable with a closed set of slot types. The layout must enumerate all possible components upfront, which re-introduces coupling — but the mount/unmount lifecycle is clean and the re-render characteristics are excellent. It's a good fit when the set of possible navbar states is small and stable.
+
+**Hybrid (Portal + Zustand)** is the most complete solution. Portals keep the layout route-agnostic with an open component set. Zustand eliminates the page-level context provider that the pure portal approach needs for the form page. Each page uses only the mechanisms it needs — the detail and history pages use portals alone, while the form page adds Zustand for mutation state. The cost is a larger conceptual surface area (two patterns to understand) and the `zustand` dependency.

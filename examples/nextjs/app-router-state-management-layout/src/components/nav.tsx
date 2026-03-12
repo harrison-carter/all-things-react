@@ -8,6 +8,7 @@ const links = [
   { href: "/context", label: "Context" },
   { href: "/portal", label: "Portal" },
   { href: "/zustand", label: "Zustand" },
+  { href: "/hybrid", label: "Hybrid" },
 ];
 
 export function Nav() {

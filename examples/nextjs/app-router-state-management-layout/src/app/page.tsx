@@ -19,6 +19,12 @@ const approaches = [
     description:
       "Pages set a slotType in a Zustand store and the layout renders the matching component. Simple and provider-free, but the layout must know about all possible slot types upfront.",
   },
+  {
+    href: "/hybrid",
+    title: "4. Portal + Zustand Hybrid",
+    description:
+      "Portals for open-ended slot injection, Zustand for provider-free mutation state. The layout is fully route-agnostic, no providers wrap the tree, and each page uses only the tools it needs.",
+  },
 ];
 
 export default function Home() {
@@ -27,7 +33,7 @@ export default function Home() {
       <div>
         <h1 className="text-2xl font-bold">Layout State Management Demo</h1>
         <p className="mt-2 text-zinc-400">
-          Three ways to surface route-specific components in a shared layout
+          Four ways to surface route-specific components in a shared layout
           when the state originates from a nested route. Each approach has three
           sub-pages — a <strong>form</strong> (save status badge), a{" "}
           <strong>detail</strong> view (back link), and a{" "}
