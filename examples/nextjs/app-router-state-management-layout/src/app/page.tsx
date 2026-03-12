@@ -5,19 +5,19 @@ const approaches = [
     href: "/context",
     title: "1. Context Provider",
     description:
-      "Wraps the entire layout tree with a Form context provider so the network status component at the nav level can read mutation state. Works, but the provider sits above routes that don't need it.",
+      "Wraps the entire layout tree with a Form context provider and a LayoutSlot context. Pages use a SlotContent component to declare what appears in the navbar. Works, but the providers sit above routes that don't need them.",
   },
   {
     href: "/portal",
     title: "2. React Portal",
     description:
-      "The form route renders a portal that injects the status component into a slot in the top-level layout. The context provider stays scoped to the form route — only the rendered output escapes upward via the portal.",
+      "Each page uses PortalInject to teleport its own component into a slot in the layout. The cleanest approach — pages are fully decoupled and can inject arbitrary content without the layout knowing in advance.",
   },
   {
     href: "/zustand",
     title: "3. Zustand Store",
     description:
-      "A React Query mutation syncs its status into a Zustand store. Any component anywhere in the tree can subscribe via useFormStore — no context wrappers needed at all.",
+      "Pages set a slotType in a Zustand store and the layout renders the matching component. Simple and provider-free, but the layout must know about all possible slot types upfront.",
   },
 ];
 
@@ -27,8 +27,12 @@ export default function Home() {
       <div>
         <h1 className="text-2xl font-bold">Layout State Management Demo</h1>
         <p className="mt-2 text-zinc-400">
-          Three ways to surface a network-status indicator in a shared layout
-          from a form that lives in a nested route.
+          Three ways to surface route-specific components in a shared layout
+          when the state originates from a nested route. Each approach has three
+          sub-pages — a <strong>form</strong> (save status badge), a{" "}
+          <strong>detail</strong> view (back link), and a{" "}
+          <strong>history</strong> list (action buttons) — showing how different
+          components swap into the same navbar slot.
         </p>
       </div>
 

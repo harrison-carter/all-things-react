@@ -1,8 +1,16 @@
 # Next.js App Router — Layout State Management Demo
 
-Three approaches to a common problem in the App Router: **how do you surface stateful UI in a shared layout when the state originates in a nested route?**
+Three approaches to a common problem in the App Router: **how do you render route-specific components in a shared layout when different pages need different things in the same slot?**
 
-The concrete example is a network-status badge (idle → saving → saved → failed) that should appear at the layout level, but the React Query mutation it represents lives in a form route nested below that layout.
+The concrete example is a navbar slot that changes depending on which page is active:
+
+| Route | Navbar slot | Purpose |
+|---|---|---|
+| `/[approach]/form` | Save status badge (idle → saving → saved → failed) | Shows real-time mutation state from a React Query form submission |
+| `/[approach]/detail` | Back link ("← Back to form") | Navigational affordance for a detail/view page |
+| `/[approach]/history` | Action buttons (Export / Refresh) | Contextual actions for a list page |
+
+The layout owns the visual placement of the slot, but each page decides _what_ appears there. The three approaches differ in how that coordination happens.
 
 ## The Problem
 
@@ -10,7 +18,9 @@ In the App Router, layouts are **persistent** — they don't re-render when you 
 
 You can't "pass props up" from a page to its layout. Layouts receive `children` as an opaque slot — they have no knowledge of which page is currently rendered or what that page's internal state looks like. So you need a mechanism to bridge that gap.
 
-This demo explores three different mechanisms, each with meaningfully different tradeoffs.
+This problem gets more interesting when different pages want **different components** in the same layout slot. A form page wants a save indicator. A detail page wants a back link. A history page wants action buttons. The layout can't hardcode any of these — it needs to render whatever the active page dictates.
+
+This demo explores three mechanisms, each with meaningfully different tradeoffs.
 
 ## Getting Started
 
@@ -19,9 +29,7 @@ npm install
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000). The home page links to all three approaches.
-
-Each route has a form that POSTs to `jsonplaceholder.typicode.com/posts` (a free public dummy API) and a status badge in the layout header showing the mutation state in real time.
+Visit [http://localhost:3000](http://localhost:3000). The home page links to all three approaches. Each approach has a tab bar to navigate between its three sub-pages (form, detail, history).
 
 ## Project Structure
 
@@ -32,25 +40,42 @@ src/
 │   ├── page.tsx                ← Home: explains & links to 3 approaches
 │   ├── providers.tsx           ← React Query provider
 │   ├── context/
-│   │   ├── layout.tsx          ← FormContextProvider wraps ENTIRE sub-tree + status badge
+│   │   ├── layout.tsx          ← FormContextProvider + LayoutSlotProvider + slot render
 │   │   ├── form-context.tsx    ← Context with RQ mutation inside
-│   │   ├── network-status.tsx  ← Reads status from context
-│   │   └── page.tsx            ← Form that calls submit via context
+│   │   ├── layout-slot-context.tsx ← Generic slot context: SlotContent + LayoutSlot
+│   │   ├── network-status.tsx  ← Reads status from form context
+│   │   ├── page.tsx            ← Index: explains the context approach
+│   │   ├── form/page.tsx       ← Form page → injects save status badge into slot
+│   │   ├── detail/page.tsx     ← Detail page → injects back link into slot
+│   │   └── history/page.tsx    ← History page → injects action buttons into slot
 │   ├── portal/
 │   │   ├── layout.tsx          ← Has a <PortalTarget> div + PortalSlotProvider
 │   │   ├── form-context.tsx    ← Context scoped to page level only
-│   │   └── page.tsx            ← Wraps itself in provider, portals status badge UP
+│   │   ├── page.tsx            ← Index: explains the portal approach
+│   │   ├── form/page.tsx       ← Portals save status badge into layout slot
+│   │   ├── detail/page.tsx     ← Portals back link into layout slot
+│   │   └── history/page.tsx    ← Portals action buttons into layout slot
 │   └── zustand/
 │       ├── hooks/
-│       │   └── useMutation/
+│       │   ├── useMutation/
+│       │   │   ├── index.ts            ← Barrel export
+│       │   │   ├── store.ts            ← Zustand store holding mutation status
+│       │   │   └── useFormMutation.ts  ← useMutation hook that syncs status into the store
+│       │   └── useNavbarSlot/
 │       │       ├── index.ts            ← Barrel export
-│       │       ├── store.ts            ← Zustand store holding status state
-│       │       └── useFormMutation.ts  ← useMutation hook that syncs status into the store
-│       ├── layout.tsx          ← useFormStore(s => s.status) — no providers
-│       └── page.tsx            ← useFormMutation() for submit/reset
+│       │       ├── store.ts            ← Zustand store holding the active slot type
+│       │       └── useNavbarSlot.ts    ← Hook: sets slot type on mount, clears on unmount
+│       ├── layout.tsx          ← Reads from both stores, renders matching component
+│       ├── page.tsx            ← Index: explains the Zustand approach
+│       ├── form/page.tsx       ← Sets slotType to "save-status"
+│       ├── detail/page.tsx     ← Sets slotType to "back-link"
+│       └── history/page.tsx    ← Sets slotType to "history-actions"
 ├── components/
 │   ├── nav.tsx                 ← Top nav with active route highlighting
-│   ├── network-status-display.tsx ← Shared presentational status badge
+│   ├── sub-nav.tsx             ← Tab bar for form/detail/history sub-routes
+│   ├── back-link.tsx           ← Presentational back arrow link
+│   ├── history-actions.tsx     ← Presentational Export/Refresh buttons
+│   ├── network-status-display.tsx ← Presentational save status badge
 │   └── portal-slot.tsx         ← PortalTarget / PortalInject / PortalSlotProvider
 └── lib/
     └── api.ts                  ← POST to jsonplaceholder.typicode.com/posts
@@ -62,25 +87,33 @@ src/
 
 ### How it works
 
-A `FormContextProvider` wraps the **entire layout sub-tree** at the `/context` layout level. This provider creates a React Query mutation internally and exposes `{ status, submit, reset }` through context. Both the layout (which renders the status badge) and the page (which renders the form) consume the same context.
+Two contexts collaborate at the layout level:
+
+1. **`FormContextProvider`** wraps the entire layout sub-tree. It creates a React Query mutation internally and exposes `{ status, submit, reset }` through context. This is unchanged from the single-route version — the mutation still lives at the layout level.
+
+2. **`LayoutSlotProvider`** wraps alongside it and holds a `slotContent` state — a React node representing whatever the active page wants to show in the navbar. Pages declare their slot content by rendering a `<SlotContent>` component, which registers its children into the context via `useEffect` and clears them on unmount. The layout renders a `<LayoutSlot>` component that reads from this context and displays whatever is currently registered.
+
+The form page renders `<SlotContent><NetworkStatusDisplay status={status} /></SlotContent>`, reading the mutation status from `FormContextProvider`. The detail page renders `<SlotContent><BackLink /></SlotContent>`. The history page renders `<SlotContent><HistoryActions /></SlotContent>`. Each page owns its slot content declaration — the layout just renders whatever is in the slot.
 
 ### Why it needs to be this way
 
-React context is scoped by the tree. A consumer can only read from a provider that sits **above it** in the component hierarchy. Since the status badge lives in the layout and the form lives in the page, the provider must wrap both — which means it has to live at or above the layout level.
+React context is scoped by the tree. A consumer can only read from a provider that sits **above it** in the component hierarchy. Since the navbar slot lives in the layout and the pages live below it, both the `LayoutSlotProvider` (for slot content) and the `FormContextProvider` (for mutation state) must wrap the shared tree.
 
-In the App Router, a route segment's `layout.tsx` is the highest point you can inject client-side providers for that segment's tree. So the `FormContextProvider` goes there.
+The `SlotContent` pattern is essentially a context-based alternative to portals. Instead of teleporting DOM nodes, pages "register" their desired slot content into a shared context, and the layout reads it. The effect is the same — the page controls what appears in the layout — but the mechanism stays within React's context model.
 
 ### Tradeoffs
 
-- **Simple and idiomatic** — this is the "standard React" way to share state across a tree. No escape hatches, no external libraries, easy to follow.
-- **Provider bloat** — the provider wraps every child route under `/context`, even routes that have nothing to do with the form. In a real app with multiple concerns, this leads to a growing stack of providers at the layout level, each re-rendering their sub-tree when their state changes.
-- **Wasted re-renders** — when the mutation status changes, React re-renders from the provider downward. Every component in the sub-tree that doesn't memoise will re-render, even if it doesn't use the form context. In this demo there's only one page, but imagine sibling routes like `/context/settings` or `/context/history` — they'd all sit inside the provider and participate in those re-renders.
-- **Mutation logic lives "too high"** — the React Query mutation is instantiated inside the provider at the layout level. Conceptually, the mutation belongs to the form. Hoisting it to the layout is a concession to the rendering hierarchy, not a reflection of the actual data flow.
+- **Stays within React primitives** — no external libraries, no portal escape hatches. The pattern is idiomatic context usage, just applied to a React node value rather than data.
+- **Declarative slot ownership** — pages render `<SlotContent>` as JSX, which reads naturally and cleans up automatically on unmount. There's no imperative "set this, then clear it" lifecycle to manage.
+- **Provider bloat** — every child route under `/context` is wrapped in both `FormContextProvider` and `LayoutSlotProvider`, even when a route (like `/detail` or `/history`) doesn't need the form context at all. In a real app with multiple concerns, this leads to a growing stack of providers at the layout level.
+- **Wasted re-renders** — when the mutation status changes, React re-renders from the `FormContextProvider` downward. Routes that don't use the form context still participate in the reconciliation. The `LayoutSlotProvider` adds a second re-render surface: any time `slotContent` changes (i.e. on every navigation), the layout re-renders.
+- **Mutation logic lives "too high"** — the React Query mutation is instantiated inside the provider at the layout level. Conceptually, the mutation belongs to the form page. Hoisting it to the layout is a concession to the rendering hierarchy, not a reflection of the actual data flow. The detail and history pages are wrapped in a form mutation provider they never use.
 
 ### Gotchas
 
-- If you forget that the provider is at the layout level, you might accidentally rely on context values in sibling routes that have nothing to do with the form — and it'll work, which makes the coupling invisible until it causes a bug.
-- The context value object `{ status, submit, reset }` is recreated on every render of the provider. If you're not careful, this can trigger unnecessary re-renders in consumers. In production you'd typically stabilise this with `useMemo`, though this demo omits it for clarity.
+- The `SlotContent` component uses `useEffect` to register content, which means the slot is empty on the first render frame and fills in after mount. In practice this is invisible, but it means the navbar slot flickers briefly during client-side navigation if you're watching closely.
+- The `children` passed to `SlotContent` are a React node, which is a new reference on every render of the parent. This means the `useEffect` fires on every render cycle. For a demo this is fine, but in production you'd want to stabilise the children reference (e.g. with `useMemo`) to avoid unnecessary state updates.
+- If you forget that `FormContextProvider` wraps the entire layout, you might accidentally use `useFormContext()` in a page that has nothing to do with forms — and it'll work, making the coupling invisible until it causes a bug.
 
 ---
 
@@ -88,29 +121,37 @@ In the App Router, a route segment's `layout.tsx` is the highest point you can i
 
 ### How it works
 
-The layout renders an empty `<PortalTarget>` div where the status badge should appear. The **page** wraps itself in its own `PortalFormContextProvider` and renders a `<PortalInject>` component that uses `ReactDOM.createPortal` to teleport the status badge into that target div up in the layout's DOM.
+The layout renders an empty `<PortalTarget>` div where the navbar slot should appear, and wraps its children in a `<PortalSlotProvider>` that passes the target element's ID down through context. Each page renders a `<PortalInject>` component that uses `ReactDOM.createPortal` to teleport its children into that target div.
 
-The key insight: the status badge **appears** to be in the layout, but its position in the **React tree** is inside the page. This means it can read from a context provider that only wraps the page, not the whole layout.
+The key insight: the slot content **appears** to be in the layout's DOM, but its position in the **React tree** is inside the page. This means it can read from providers that only wrap the page, not the entire layout.
+
+Each page simply wraps whatever component it wants in `<PortalInject>`:
+- The form page portals `<NetworkStatusDisplay>` (wrapped in its own `PortalFormContextProvider` at the page level).
+- The detail page portals `<BackLink>`.
+- The history page portals `<HistoryActions>`.
+
+The layout doesn't know — or need to know — which component is being injected. It just provides the target.
 
 ### Why it needs to be this way
 
-The portal solves the fundamental tension: the badge needs to _render_ in the layout's DOM for visual placement, but it needs to _exist_ in the page's React tree for context access. `createPortal` is the React primitive that decouples DOM placement from tree position.
+The portal solves the fundamental tension: the slot content needs to _render_ in the layout's DOM for visual placement, but it needs to _exist_ in the page's React tree for context access and lifecycle management. `createPortal` is the React primitive that decouples DOM placement from tree position.
 
-The `PortalSlotProvider` context passes the target element ID from the layout down to the page so the page knows _where_ to inject. This is a lightweight coordination mechanism — the layout says "there's a slot here with this ID", and any child route can optionally fill it.
+This approach is the natural winner for the multi-component scenario. Because each page independently decides what to inject, adding a new route with a new navbar component requires zero changes to the layout. The portal infrastructure is generic — it doesn't encode any knowledge of what's being injected.
 
 ### Tradeoffs
 
-- **Scoped providers** — the context provider only wraps the form route. If you navigate to a hypothetical `/portal/settings` sibling route, there's no form provider in the tree, no wasted re-renders, no accidental coupling.
-- **Composable** — different child routes can inject different components into the same portal slot, or nothing at all. The layout doesn't need to know which route is active or conditionally render based on the pathname.
-- **More moving parts** — you need a portal target component, a portal injection component, and a context to wire them together. This is more infrastructure than a simple context provider.
+- **Scoped providers** — the `PortalFormContextProvider` only wraps the form page. The detail and history pages have no form provider in their tree, no wasted re-renders, no accidental coupling to mutation state.
+- **Fully decoupled** — the layout has no awareness of what routes exist or what they inject. Adding a fourth route with a completely new navbar component requires no layout changes. This is the only approach where the layout's code is truly route-agnostic.
+- **Natural cleanup** — when you navigate away from a page, the portal content unmounts with the page. The slot is empty on routes that don't inject anything. There's no stale state to worry about.
+- **More infrastructure** — you need a portal target component, a portal injection component, and a context to wire them together. This is more plumbing than a simple context value or a store flag.
 - **DOM/React tree mismatch** — the badge is in the layout's DOM but the page's React tree. This can be confusing when debugging with React DevTools (the component appears under the page, not where you see it on screen). Event bubbling also follows the React tree, not the DOM tree, which can cause surprises.
-- **Mounting order dependency** — the portal target div must exist in the DOM before `PortalInject` tries to find it. This is handled with a `useEffect` that looks up the element after mount, but it means the badge won't appear on the very first render frame — there's a brief moment where the slot is empty. In practice this is invisible, but it's worth understanding.
+- **Mounting order dependency** — the portal target div must exist in the DOM before `PortalInject` tries to find it. This is handled with a `useEffect` that looks up the element after mount, meaning the slot content won't appear on the very first render frame.
 
 ### Gotchas
 
-- If the layout re-mounts (which shouldn't happen in normal App Router navigation, but can during development with Fast Refresh), the portal target div gets a new DOM node, but the page's `useEffect` has already captured the old one. The portal silently renders into a detached node. This is mostly a dev-mode concern, but it can cause confusing "disappearing badge" bugs during hot reload.
-- Server-side rendering and portals don't mix. `createPortal` is client-only. The status badge simply won't be in the initial HTML — it appears after hydration. If the badge were critical content (e.g. for SEO or accessibility), this would be a problem.
-- If multiple child routes try to inject into the same portal slot simultaneously (e.g. during a route transition where both the old and new page are briefly mounted), you can get duplicate badges. In practice the App Router unmounts the old page before mounting the new one, but it's a footgun in other routing setups.
+- If the layout re-mounts (which shouldn't happen in normal App Router navigation, but can during development with Fast Refresh), the portal target div gets a new DOM node, but the page's `useEffect` has already captured the old one. The portal silently renders into a detached node. This is mostly a dev-mode concern, but it can cause confusing "disappearing content" bugs during hot reload.
+- Server-side rendering and portals don't mix. `createPortal` is client-only. The slot content won't be in the initial HTML — it appears after hydration. If the content were critical for SEO or accessibility, this would be a problem.
+- If multiple child routes try to inject into the same portal slot simultaneously (e.g. during a route transition where both the old and new page are briefly mounted), you can get duplicate content. In practice the App Router unmounts the old page before mounting the new one, but it's a footgun in other routing setups.
 
 ---
 
@@ -118,34 +159,40 @@ The `PortalSlotProvider` context passes the target element ID from the layout do
 
 ### How it works
 
-A Zustand store (`useFormStore`) is defined as a module-level singleton that holds the mutation status. A companion `useFormMutation` hook wraps React Query's `useMutation` and syncs its status into the store via a `useEffect`. The page calls `useFormMutation()` to get the mutation controls and trigger the sync. The layout calls `useFormStore(s => s.status)` to read the status — no providers, no tree position requirements.
+Two Zustand stores collaborate:
 
-The key design: React Query still owns the mutation lifecycle (retries, deduplication, devtools, etc.), but Zustand acts as a bridge that makes the status readable from anywhere in the tree without a shared context provider.
+1. **`useFormStore`** holds the mutation status (`idle`, `pending`, `success`, `error`). The `useFormMutation` hook wraps React Query's `useMutation` and syncs its status into this store via `useEffect`.
+
+2. **`useNavbarSlotStore`** holds a `slotType` discriminator (`"save-status"`, `"back-link"`, `"history-actions"`, or `null`). Each page calls `useNavbarSlot("save-status")` (or similar) on mount, which sets the type in the store and clears it on unmount.
+
+The layout reads from both stores. A `NavbarSlot` component switches on the `slotType` and renders the matching component — `NetworkStatusDisplay` for `"save-status"`, `BackLink` for `"back-link"`, `HistoryActions` for `"history-actions"`, or nothing for `null`.
 
 ### Why it needs to be this way
 
-`useMutation` is a React hook — it can only be called inside a React component or another hook, not inside a Zustand store creator function. So the mutation can't live _in_ the store directly. Instead, the store acts as a shared state bus: the `useFormMutation` hook runs the mutation and pushes status updates into the store, and any other component can subscribe to those updates through the store.
+Zustand stores are JavaScript module singletons. When two components import the same store, they get the same instance — the React component tree is irrelevant. This sidesteps the "where does the provider go?" question entirely.
 
-Zustand stores are JavaScript module singletons. When two components import the same store, they get the same instance — the React component tree is irrelevant. This sidesteps the "where does the provider go?" problem because there is no provider.
+However, the multi-component scenario introduces a limitation: because Zustand stores hold serialisable state (not React nodes), the layout can't receive arbitrary components from pages the way a portal or context can. Instead, pages declare a _type_ (a string), and the layout maps that type to a known component. This means the layout must know about all possible slot types upfront — a closed set rather than an open one.
+
+The `useNavbarSlot` hook encapsulates the mount/unmount lifecycle: it sets the slot type on mount and resets it to `null` on unmount, ensuring the layout reflects the current page at all times.
 
 ### Tradeoffs
 
-- **Zero tree-position concerns** — any component can subscribe to the store without needing to be wrapped in anything. No provider nesting, no portal infrastructure, no coordination between layout and page.
-- **Keeps React Query's features** — because the mutation is still driven by `useMutation`, you retain automatic retries, deduplication, React Query devtools integration, cache invalidation, `onSuccess`/`onError` callbacks, and lifecycle-aware cleanup (e.g. cancelling on unmount). The store is a thin synchronisation layer, not a replacement for React Query.
-- **Selective re-renders by default** — Zustand's `useFormStore(s => s.status)` selector pattern means the layout only re-renders when `status` changes, not when any other store field changes. This is more granular than context, which re-renders all consumers when _any_ part of the context value changes.
-- **Two-layer indirection** — the mental model is: `useMutation` → `useEffect` sync → Zustand store → subscriber components. This is more layers than context (where the mutation and the consumers share the same context directly). You need to understand both React Query and Zustand to follow the data flow.
-- **Singleton semantics** — the store is global. If you had two independent forms that each needed their own mutation state, you'd need two stores, or a more complex store shape with keyed entries. Context naturally scopes state to a sub-tree; Zustand doesn't.
-- **External dependency** — Zustand is a third-party library. It's small (~1KB) and widely adopted, but it's still a dependency that context and portals don't require.
-- **The status component is statically placed in the layout** — because there's no portal and no context-driven conditional rendering, the `NetworkStatusDisplay` is hardcoded into the layout and always renders, even if the active child route has nothing to do with a form. Compare this with the portal approach, where the badge only appears when a form route mounts and injects it — if you navigate to a non-form sibling route, the portal slot is simply empty. With Zustand, you'd need to add your own conditional logic in the layout (e.g. checking pathname, or adding a `visible` flag to the store) to hide the badge on irrelevant routes. This partially undermines the "zero coordination" selling point — you've removed the need for context wrappers, but you've re-introduced a different kind of coupling between the layout and the routes it hosts.
-- **State persists across navigations** — because the store is a module singleton, the status doesn't reset when you navigate away from `/zustand` and back. With the context approach, navigating away unmounts the provider and resets state. Whether persistence is desirable depends on your use case — sometimes you want "saved" to stick around, sometimes you want a fresh state on every visit. This compounds the static-placement issue above: not only is the badge always visible, it can show stale state from a previous visit to the form route.
+- **Zero tree-position concerns** — any component can subscribe to either store without needing to be wrapped in anything. No provider nesting, no portal infrastructure, no coordination between layout and page.
+- **Keeps React Query's features** — the mutation is still driven by `useMutation`, so you retain automatic retries, deduplication, devtools integration, cache invalidation, and lifecycle-aware cleanup. The store is a thin synchronisation layer.
+- **Selective re-renders by default** — Zustand's selector pattern (`useFormStore(s => s.status)`) means the layout only re-renders when the selected value changes, not when any other store field changes. This is more granular than context.
+- **Clean mount/unmount lifecycle** — the `useNavbarSlot` hook clears the slot type on unmount, so navigating to a route that doesn't call the hook leaves the slot empty. This solves the "stale badge" problem that a naive single-store approach would have.
+- **Closed component set** — the layout must enumerate all possible slot types in a switch statement. Adding a new navbar component requires a code change in the layout, unlike the portal approach where new routes can inject arbitrary content. This re-introduces a form of coupling between the layout and the routes it hosts.
+- **Two stores, two layers of indirection** — the data flow is: `useMutation` → `useEffect` sync → form store → layout; and separately: page mount → `useNavbarSlot` → slot store → layout. This is more layers than context (where everything shares a single context) or portals (where the page directly renders what appears in the layout).
+- **Singleton semantics** — the stores are global. If you had two independent instances of this pattern (e.g. two sidebars each with their own slot), you'd need two sets of stores. Context and portals naturally scope state to a sub-tree.
+- **External dependency** — Zustand is a third-party library. It's small (~1KB) and widely adopted, but context and portals don't require anything beyond React.
 
 ### Gotchas
 
-- The `useEffect` that syncs mutation status into the store runs _after_ render, so there's a one-frame delay between the mutation status changing and the store (and its subscribers) updating. In practice this is imperceptible, but it means the store is always one render cycle behind the actual mutation. If you need perfectly synchronous reads, you'd need to call `setStatus` inside the mutation callbacks (`onMutate`, `onSuccess`, `onError`) instead of a `useEffect`, though this adds more wiring.
-- The `useFormMutation` hook must be called somewhere in the tree for the sync to happen. If no component mounts it, the store stays at its initial `"idle"` state forever. This is unlike the context approach where the provider _is_ the mutation — here the mutation and the store are separate concerns that need to be connected by a mounted hook.
-- The store is shared across the entire application. If you accidentally use the same store in an unrelated component, you'll get real state coupling that's invisible in the component tree — it only shows up as unexpected re-renders or state changes.
-- Server components cannot use Zustand (or any hooks). The layout in this demo is a client component (`"use client"`). If you needed the layout to be a server component, you'd have to push the store subscription into a client child component, which partially negates the "just import the hook anywhere" simplicity.
-- Zustand stores are not garbage collected. If you create stores dynamically (e.g. one per form instance), you need to clean them up manually. The singleton pattern in this demo avoids this, but it's a common pitfall in more complex setups.
+- The `useEffect` that syncs mutation status into the store runs _after_ render, so there's a one-frame delay between the mutation status changing and the store updating. In practice this is imperceptible, but the store is always one render cycle behind the actual mutation. For perfectly synchronous reads, you'd need to call `setStatus` inside mutation callbacks (`onMutate`, `onSuccess`, `onError`) instead of a `useEffect`.
+- The `useFormMutation` hook must be called somewhere in the tree for the status sync to happen. If no component mounts it, the form store stays at its initial `"idle"` state forever.
+- If `useNavbarSlot` unmount cleanup races with the next page's mount, the slot type can briefly flicker to `null` between navigations. In practice the App Router's transition model prevents this, but it's worth understanding the timing.
+- The layout in this approach is a client component (`"use client"`) because it uses hooks. If you needed the layout to be a server component, you'd have to push the store subscriptions into client child components.
+- Zustand stores are not garbage collected. The singleton pattern here avoids this concern, but creating stores dynamically (e.g. one per form instance) requires manual cleanup.
 
 ---
 
@@ -155,18 +202,18 @@ There isn't a universal answer — it depends on the shape of your app and what 
 
 | | Context | Portal | Zustand |
 |---|---|---|---|
-| **Provider needed at layout level** | Yes | No (page-scoped) | No (no provider) |
+| **Provider needed at layout level** | Yes (two: form + slot) | No (page-scoped) | No (no provider) |
 | **Extra dependencies** | None | None | `zustand` |
 | **Re-render scope** | All provider children | Only portal content | Only selecting components |
-| **Status badge visibility** | Always (layout-level) | Only when form route is active | Always (layout-level, static) |
-| **State lifetime** | Tied to provider mount | Tied to provider mount | Module singleton (persistent) |
+| **Layout knows about slot types** | No (receives arbitrary nodes) | No (receives arbitrary nodes) | Yes (closed switch on types) |
+| **Slot cleanup on navigation** | Automatic (useEffect unmount) | Automatic (portal unmounts) | Automatic (useNavbarSlot unmount) |
+| **Adding a new navbar component** | New page only | New page only | New page + layout switch case |
+| **State lifetime** | Tied to provider mount | Tied to page mount | Module singleton (cleared by hook) |
 | **SSR-compatible** | Yes | Partial (portal is client-only) | Client components only |
-| **Uses React Query mutation** | Yes | Yes | Yes (synced into store) |
-| **Complexity** | Low | Medium | Medium (two-layer sync) |
-| **Scales to many consumers** | Re-render cost grows | Neutral | Neutral (with selectors) |
+| **Complexity** | Low–medium | Medium | Medium (two stores + sync) |
 
-**Context** is the right default when the state is genuinely shared across most of the sub-tree and you want to stay within React's built-in primitives.
+**Context** is the right default when you want to stay within React's built-in primitives and the provider wrapping cost is acceptable. The `SlotContent` pattern gives pages declarative control over the slot without introducing external dependencies. The main cost is provider bloat — every route is wrapped in contexts it may not need.
 
-**Portals** shine when you need a component to _visually_ live in one place but _logically_ belong to another — especially when you want to keep providers tightly scoped to the routes that actually need them.
+**Portals** are the cleanest solution for this specific problem. Each page independently owns what appears in the layout, the layout is fully route-agnostic, and providers stay scoped to the pages that need them. The tradeoff is more infrastructure (target/inject/context plumbing) and the DOM/React tree mismatch that can complicate debugging.
 
-**Zustand** is the pragmatic choice when you're tired of thinking about tree position and just want state that any component can tap into. It trades the implicit scoping of context for explicit, globally accessible state — but that global nature means UI placement decisions (like whether to show a status badge) become your responsibility again. The layout has no way to know whether a form route is active, so the badge is always rendered. You'd need to layer in your own visibility logic, which re-introduces some of the coordination that Zustand was meant to eliminate.
+**Zustand** is the pragmatic choice when you want to avoid provider hierarchies entirely and you're comfortable with a closed set of slot types. The layout must enumerate all possible components upfront, which re-introduces coupling — but the mount/unmount lifecycle is clean and the re-render characteristics are excellent. It's a good fit when the set of possible navbar states is small and stable.
